@@ -5,7 +5,7 @@
 import os
 import sys
 import re
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 # 添加项目根目录到 Python 模块搜索路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -25,6 +25,7 @@ class KnowledgeLoader:
         self.embedding_model = None
         self.client = None
         self.collection = None
+        self.bm25_index: Optional[object] = None
 
     def load_embedding_model(self, model_name: str = "BAAI/bge-small-zh-v1.5"):
         """加载Embedding模型（使用全局缓存）"""
@@ -39,6 +40,8 @@ class KnowledgeLoader:
             name=collection_name,
             metadata={"hnsw:space": "cosine"}
         )
+        # 加载 BM25 索引（pkl 缺失/损坏时从 Chroma 自愈重建）
+        self._load_or_rebuild_bm25()
 
     def parse_markdown(self, file_path: str) -> List[Tuple[str, str]]:
         """解析Markdown文件，提取问答对"""
@@ -128,8 +131,48 @@ class KnowledgeLoader:
             embeddings=embeddings
         )
 
+        # 构建 BM25 索引（与 ChromaDB 同批，id 对齐）
+        self._build_bm25_index(ids, documents, metadatas)
+
         print(f"\n知识库构建完成！共 {len(ids)} 条记录")
         print(f"存储位置: {os.path.abspath(self.persist_dir)}")
+
+    def _build_bm25_index(self, ids: List[str], documents: List[str], metadatas: List[dict]):
+        """构建并持久化 BM25 索引（与 ChromaDB 同批，id 对齐）"""
+        from src.core.bm25_index import BM25Index
+        index_path = os.path.join(self.persist_dir, "bm25_index.pkl")
+        self.bm25_index = BM25Index(index_path=index_path)
+        self.bm25_index.build(ids, documents, metadatas)
+        self.bm25_index.save()
+        print(f"BM25 索引构建完成：{len(self.bm25_index)} 条")
+
+    def _load_or_rebuild_bm25(self):
+        """加载 BM25 索引；pkl 缺失/损坏时从 Chroma 全量自愈重建"""
+        from src.core.bm25_index import BM25Index
+        index_path = os.path.join(self.persist_dir, "bm25_index.pkl")
+        self.bm25_index = BM25Index(index_path=index_path)
+        if self.bm25_index.load():
+            return
+        # 自愈重建
+        try:
+            ids, documents, metadatas = self.get_all_documents()
+            if ids:
+                self.bm25_index.build(ids, documents, metadatas)
+                self.bm25_index.save()
+                print(f"[bm25] 索引缺失，已从 Chroma 自愈重建：{len(ids)} 条")
+        except Exception as e:
+            print(f"[bm25] 自愈重建失败（混合检索将退化为纯向量）: {e}")
+            self.bm25_index = None
+
+    def get_all_documents(self) -> Tuple[List[str], List[str], List[dict]]:
+        """从 Chroma 拉取全量文档，返回 (ids, documents, metadatas)，供 BM25 重建/reranker 使用"""
+        if self.collection is None:
+            self.init_chromadb()
+        data = self.collection.get()
+        ids = data.get("ids", [])
+        documents = data.get("documents", [])
+        metadatas = data.get("metadatas", [])
+        return ids, documents, metadatas
 
     def search(self, query: str, top_k: int = 3) -> List[dict]:
         """检索相关文档"""

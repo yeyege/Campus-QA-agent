@@ -26,6 +26,20 @@ async def lifespan(app):
     from src.core.cache import get_embedding_model
     get_embedding_model()
     print("Embedding 模型加载完成")
+
+    # 条件预加载 Reranker（避免首问冷启动；失败不阻塞，重排序将自动回退）
+    try:
+        from src.core.config import get_config
+        from src.core.cache import get_reranker_model
+        retriever_cfg = get_config().retriever
+        if retriever_cfg.get("enable_rerank", True):
+            print("正在预加载 Reranker 模型...")
+            rerank_cfg = retriever_cfg.get("rerank", {})
+            get_reranker_model(rerank_cfg.get("model_name", "BAAI/bge-reranker-base"))
+            print("Reranker 模型加载完成")
+    except Exception as e:
+        print(f"Reranker 预加载失败（重排序将回退）: {e}")
+
     yield
 
 

@@ -12,9 +12,34 @@ vector_db:
   collection_name: campus_faq
   persist_directory: knowledge_base/processed
 
-# 检索配置
+# 检索配置（查询改写 / 混合检索 / 重排序）
 retriever:
-  top_k: 3
+  top_k: 3                  # 最终送 LLM 的上下文条数
+  top_n: 10                 # 混合检索召回数（rerank 候选池）
+  relevance_threshold: 0.6 # distance 过滤阈值（越小越相关，兼容现有 0.6）
+
+  # —— 查询改写 ——（始终启用，失败/超时回退原 query）
+  enable_rewrite: true
+  rewrite:
+    max_tokens: 64
+    temperature: 0.0
+    timeout: 1.2            # 秒，超时回退原 query
+    max_history_pairs: 3    # 取最近 N 轮历史进 prompt
+
+  # —— 混合检索 ——（向量 + BM25，RRF 融合）
+  enable_hybrid: true
+  hybrid:
+    vector_top_n: 10
+    bm25_top_n: 10
+    rrf_k: 60               # RRF 常数
+    bm25_index_path: knowledge_base/processed/bm25_index.pkl
+
+  # —— 重排序 ——（bge-reranker-base cross-encoder 精排）
+  enable_rerank: true
+  rerank:
+    model_name: BAAI/bge-reranker-base
+    top_n: 10               # 参与 rerank 的候选数
+    top_k: 5                # rerank 后保留数（应 >= retriever.top_k）
 
 # API 配置
 api:

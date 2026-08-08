@@ -8,3 +8,5 @@ sentence-transformers
 gradio
 python-docx
 PyPDF2
+rank_bm25
+jieba

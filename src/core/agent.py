@@ -8,6 +8,9 @@ from typing import List, Dict, Generator, Optional, Tuple
 from src.core.llm import get_llm_client
 from src.core.knowledge_loader import KnowledgeLoader
 from src.core.conversation import conversation_manager
+from src.core.config import get_config
+from src.core.hybrid_retriever import HybridRetriever
+from src.core.query_rewriter import QueryRewriter
 
 # Prompt模板
 SYSTEM_PROMPT = """你是校园智能助手"小智"，专注于校园知识问答。
@@ -28,6 +31,29 @@ class CampusAgent:
         self.knowledge_loader = KnowledgeLoader()
         self.knowledge_loader.init_chromadb()
         self.knowledge_loader.load_embedding_model()
+
+        # 检索增强配置（查询改写 / 混合检索 / 重排序）
+        self._retriever_config = get_config().retriever
+        self._enable_rewrite = bool(self._retriever_config.get("enable_rewrite", True))
+        self._relevance_threshold = float(self._retriever_config.get("relevance_threshold", 0.6))
+
+        # 混合检索编排器（向量 + BM25 + RRF + rerank，含失败回退）
+        self._hybrid_retriever = HybridRetriever(self.knowledge_loader, self._retriever_config)
+
+        # 查询改写器（条件实例化）
+        if self._enable_rewrite:
+            self._query_rewriter = QueryRewriter(self.llm_client, self._retriever_config)
+        else:
+            self._query_rewriter = None
+
+        # 预热 reranker（条件；失败不阻塞，重排序将自动回退）
+        if bool(self._retriever_config.get("enable_rerank", True)):
+            try:
+                from src.core.cache import get_reranker_model
+                rerank_cfg = self._retriever_config.get("rerank", {})
+                get_reranker_model(rerank_cfg.get("model_name", "BAAI/bge-reranker-base"))
+            except Exception as e:
+                print(f"[agent] Reranker 预加载失败（重排序将回退）: {e}")
 
         # 检索缓存
         self._search_cache = {}
@@ -55,30 +81,49 @@ class CampusAgent:
         clean_text = re.sub(r'\n{3,}', '\n\n', clean_text)
         return clean_text, [url for alt, url in images]
 
-    def _get_cached_search(self, question: str, top_k: int = 2) -> List[dict]:
-        """获取缓存的检索结果"""
-        cache_key = f"{question}_{top_k}"
+    def _retrieve(self, question: str, session_id: str, top_k: int = 2) -> List[dict]:
+        """
+        检索入口：查询改写（可选）→ 缓存 → 混合检索（向量+BM25+RRF+rerank）。
+        改写后的 query 仅用于检索；任何增强环节失败均回退，不阻塞主流程。
+        """
+        # 1. 查询改写（仅多轮有意义；改写失败/超时回退原 question）
+        query = question
+        if self._query_rewriter is not None:
+            history = conversation_manager.get_history(session_id)
+            query = self._query_rewriter.rewrite(question, history)
+            if query != question:
+                print(f"[retrieve] 改写: '{question}' -> '{query}'")
+
+        # 2. 缓存（基于改写后的 query，避免历史变化时错误命中旧改写）
+        cache_key = f"{query}_{top_k}"
         if cache_key in self._search_cache:
             return self._search_cache[cache_key]
 
-        results = self.knowledge_loader.search(question, top_k)
+        # 3. 混合检索
+        results = self._hybrid_retriever.retrieve(query, top_k)
         self._search_cache[cache_key] = results
         return results
 
     def _format_context(self, search_results: List[dict]) -> Tuple[str, List[str]]:
-        """格式化检索结果，返回文本和图片列表"""
+        """格式化检索结果"""
         if not search_results:
             return "无相关资料", []
 
-        # 检查检索结果是否相关（距离越小越相关）
-        best_distance = search_results[0]["distance"]
-        if best_distance > 1.0:  # 阈值，超过表示不相关
+        parts = []
+        all_images = []
+        for r in search_results:
+            if r["distance"] > self._relevance_threshold:
+                continue
+            doc = r["document"]
+            clean, images = self._extract_images(doc)
+            parts.append(clean)
+            all_images.extend(images)
+
+        if not parts:
             return "无相关资料", []
 
-        doc = search_results[0]["document"]
-        # 提取图片URL
-        clean_text, images = self._extract_images(doc)
-        return clean_text[:300], images
+        context = "\n---\n".join(parts)
+        return context, all_images
 
     def _build_messages_with_history(self, session_id: str, question: str, context: str) -> List[Dict]:
         """构建带历史的消息"""
@@ -100,8 +145,8 @@ class CampusAgent:
 
     def chat(self, question: str, session_id: str = "default", top_k: int = 2) -> Dict:
         """多轮对话聊天，返回包含文本和图片的字典"""
-        # 检索知识库
-        search_results = self._get_cached_search(question, top_k)
+        # 检索知识库（含查询改写 + 混合检索 + 重排序）
+        search_results = self._retrieve(question, session_id, top_k)
         context, images = self._format_context(search_results)
 
         # 构建带历史的消息
@@ -125,8 +170,8 @@ class CampusAgent:
         full_answer = ""
         images = []
         try:
-            # 检索知识库
-            search_results = self._get_cached_search(question, top_k)
+            # 检索知识库（含查询改写 + 混合检索 + 重排序）
+            search_results = self._retrieve(question, session_id, top_k)
             context, images = self._format_context(search_results)
 
             # 构建带历史的消息

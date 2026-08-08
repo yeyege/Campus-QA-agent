@@ -62,6 +62,19 @@ def main():
     get_embedding_model()
     print("      ✓ 完成")
 
+    # 条件预加载 Reranker（避免首问冷启动）
+    try:
+        from src.core.config import get_config
+        from src.core.cache import get_reranker_model
+        retriever_cfg = get_config().retriever
+        if retriever_cfg.get("enable_rerank", True):
+            print("\n[1.5/3] 加载Reranker模型...")
+            rerank_cfg = retriever_cfg.get("rerank", {})
+            get_reranker_model(rerank_cfg.get("model_name", "BAAI/bge-reranker-base"))
+            print("        ✓ 完成")
+    except Exception as e:
+        print(f"\n[1.5/3] Reranker 加载失败（重排序将回退）: {e}")
+
     # 启动FastAPI
     print("\n[2/3] 启动FastAPI...")
     api_thread = threading.Thread(target=start_fastapi, args=(api_port,), daemon=True)
