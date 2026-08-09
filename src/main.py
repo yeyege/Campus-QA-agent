@@ -5,9 +5,9 @@
 import os
 import sys
 
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-os.environ["HF_HUB_OFFLINE"] = "1"
+# 注意：HF_ENDPOINT 由 cache.py 在模块导入时统一设置
+# TRANSFORMERS_OFFLINE 由 cache.py 中的加载策略动态切换（先离线再在线）
+# 此处不强制设置离线模式，避免首次启动无法下载缺失模型
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
