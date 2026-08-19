@@ -1,4 +1,0 @@
-2026-06-05 00:17:57,076 [DEBUG] campus_qa - {'event': 'retrieval', 'question': '你好', 'results_count': 2, 'best_score': 0.6066}
-2026-06-05 00:18:01,999 [INFO] campus_qa - {'event': 'chat_request', 'question': '你好', 'response_length': 64, 'latency_ms': 4995.05, 'session_id': 's_1o4ci3zp'}
-2026-06-05 00:26:01,081 [DEBUG] campus_qa - {'event': 'retrieval', 'question': '你好', 'results_count': 2, 'best_score': 0.6066}
-2026-06-05 00:26:10,257 [INFO] campus_qa - {'event': 'chat_request', 'question': '你好', 'response_length': 0, 'latency_ms': 9176.08, 'session_id': 's_1o4ci3zp'}
